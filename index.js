@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const TELEGRAM_TOKEN = "8072640433:AAEEobZMFTpPOx01qGpPwq_b26xsEzXh8-o";
-const TELEGRAM_CHAT_ID = "-4213483866"; 
+const TELEGRAM_CHAT_ID = "-4213483866";
 
 async function getTopStocks() {
   const url = "https://scanner.tradingview.com/indonesia/scan";
@@ -42,9 +42,7 @@ async function getTopStocks() {
       });
 
       return message;
-    }
-
-    else {
+    } else {
       return "No data found or API changed.";
     }
   } catch (err) {
@@ -68,7 +66,17 @@ async function sendToTelegram(message) {
 }
 
 async function main() {
-  const report = await getTopStocks();
+  const day = new Date().getUTCDay(); 
+
+  let report;
+
+  if (day === 0 || day === 6) {
+    report = "🛌 Market Tutup ... healing hela atuh boy";
+  } else {
+    // Hari biasa
+    report = await getTopStocks();
+  }
+
   await sendToTelegram(report);
 }
 
