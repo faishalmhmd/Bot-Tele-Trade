@@ -73,7 +73,6 @@ async function main() {
   if (day === 0 || day === 6) {
     report = "🛌 Market Tutup ... healing hela atuh boy";
   } else {
-    // Hari biasa
     report = await getTopStocks();
   }
 
