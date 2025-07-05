@@ -2,7 +2,7 @@ name: Run Telegram Stock Bot
 
 on:
   schedule:
-    - cron: '0 1 * * *' # UTC time (jam 8 pagi WIB)
+    - cron: '0 18 * * *' # UTC time (jam 8 pagi WIB)
   workflow_dispatch:
 
 jobs:
