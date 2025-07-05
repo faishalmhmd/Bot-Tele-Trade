@@ -235,13 +235,12 @@ async function main() {
 
   let report;
   report = await getTopStocks();
-  // if (day === 0 || day === 6) {
-  //   report = "🛌 Market Tutup ... healing hela atuh boy";
-  // } else {
-  //   report = await getTopStocks();
-  // }
+  if (day === 0 || day === 6) {
+    report = "🛌 Market Tutup ... healing hela atuh boy";
+  } else {
+    report = await getTopStocks();
+  }
 
-  // console.log(report);
   await sendToTelegram(report);
 }
 
