@@ -294,7 +294,7 @@ async function getTopStocks() {
     const formatItem = (item, index) => {
       const [name, close, change, volume, high, low] = item.d;
 
-      const changeStr = (change > 0 ? "+" : "") + change.toFixed(2) + "%";
+      const changeStr = (change > 0 ? "+" : "") + (Number.isFinite(change) ? change.toFixed(2) : "0.00") + "%";
 
       // Generate realistic price data
       const closes = generateRealisticPriceData(close, 50);
