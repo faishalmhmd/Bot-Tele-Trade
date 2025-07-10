@@ -1,13 +1,10 @@
 import axios from "axios";
 
-/** === 🔧 Telegram Config === **/
-
+// telegram config
 const TELEGRAM_TOKEN = "8072640433:AAEEobZMFTpPOx01qGpPwq_b26xsEzXh8-o";
 const TELEGRAM_CHAT_ID = "-1002828449055"; // supergroup id (bukan yang lama)
-// const TELEGRAM_CHAT_ID = "5905735106"; // supergroup id (bukan yang lama)
 const TELEGRAM_THREAD_ID = 2; // ✅ thread id untuk Info Saham
 
-// {"id":5905735106,"first_name":"Beast","username":"BeastMask","type":"private"},"date":1751897976,"text":"hello world"}}
 const headers = {
   "Content-Type": "application/json",
   "Origin": "https://id.tradingview.com",
@@ -16,7 +13,58 @@ const headers = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.70 Safari/537.36"
 };
 
-/** === 🧠 Utils: Perhitungan Indikator === **/
+
+async function fetchBeritaKontanDanKirim() {
+  const today = new Date();
+  const tanggal = String(today.getDate()).padStart(2, '0');
+  const bulan = String(today.getMonth() + 1).padStart(2, '0');
+  const tahun = today.getFullYear();
+
+  const url = `https://www.kontan.co.id/search/indeks?kanal=investasi&tanggal=${tanggal}&bulan=${bulan}&tahun=${tahun}&pos=indeks`;
+  
+  try {
+    const res = await axios.get(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.kontan.co.id",
+        "Origin": "https://www.kontan.co.id"
+      }
+    });
+    
+    const html = res.data;
+    
+    const regex = /<h1[^>]*>(.*?)<\/h1>/g;
+    const matches = [...html.matchAll(regex)];
+    
+    let message = `📰 *Berita Emiten Kontan Hari Ini*\n\n`;
+    const addedEmiten = new Set();
+    
+    matches.forEach(match => {
+      const text = match[1].replace(/<[^>]+>/g, '').trim();
+      const emitenMatch = text.match(/\b[A-Z]{4}\b/);
+      
+      if (emitenMatch) {
+        const emiten = emitenMatch[0];
+        if (!addedEmiten.has(emiten)) {
+          message += `• *${emiten}* - ${text}\n`;
+          addedEmiten.add(emiten);
+        }
+      }
+    });
+
+    if (addedEmiten.size === 0) {
+      message += "Tidak ada berita emiten ditemukan hari ini.";
+    }
+
+    await sendToTelegram(message);
+
+  } catch (err) {
+    console.error("Fetch Kontan Error:", err.message);
+  }
+}
+
+
+
 
 function calculateMA(closes, period = 20) {
   if (closes.length < period) return 0;
@@ -37,8 +85,7 @@ function calculateRSI(closes, period = 14) {
   
   let avgGain = 0;
   let avgLoss = 0;
-  
-  // Calculate initial average gain and loss
+
   for (let i = 0; i < period; i++) {
     if (changes[i] > 0) {
       avgGain += changes[i];
@@ -50,7 +97,6 @@ function calculateRSI(closes, period = 14) {
   avgGain /= period;
   avgLoss /= period;
   
-  // Calculate RSI for remaining periods
   for (let i = period; i < changes.length; i++) {
     const change = changes[i];
     if (change > 0) {
@@ -88,14 +134,11 @@ function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 
     return { macd: "0.00", signal: "0.00", histogram: "0.00" };
   }
 
-  // Calculate EMA12 and EMA26 for the full dataset
   const emaFast = calculateEMA(closes, fastPeriod);
   const emaSlow = calculateEMA(closes, slowPeriod);
   
-  // MACD Line = EMA12 - EMA26
   const macdLine = emaFast - emaSlow;
   
-  // Calculate MACD values for signal line (need historical MACD values)
   const macdArray = [];
   for (let i = slowPeriod - 1; i < closes.length; i++) {
     const dataSlice = closes.slice(0, i + 1);
@@ -104,10 +147,8 @@ function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 
     macdArray.push(fast - slow);
   }
   
-  // Signal Line = EMA9 of MACD Line
   const signalLine = calculateEMA(macdArray, signalPeriod);
   
-  // Histogram = MACD Line - Signal Line
   const histogram = macdLine - signalLine;
 
   return {
@@ -134,26 +175,21 @@ function calculateBB(closes, period = 20) {
   };
 }
 
-/** === 📊 Generate Realistic Price Data === **/
-
 function generateRealisticPriceData(currentPrice, periods = 50) {
   const closes = [];
   let price = currentPrice * 0.95; // Start 5% lower
   
   for (let i = 0; i < periods; i++) {
-    // Add some random volatility with market-like behavior
-    const volatility = (Math.random() - 0.5) * 0.03; // ±1.5% random
-    const trend = 0.001 + (Math.random() * 0.002); // 0.1-0.3% upward trend
-    const momentum = Math.sin(i * 0.1) * 0.005; // Add cyclical momentum
+    const volatility = (Math.random() - 0.5) * 0.03;
+    const trend = 0.001 + (Math.random() * 0.002);
+    const momentum = Math.sin(i * 0.1) * 0.005;
     
     price = price * (1 + trend + volatility + momentum);
-    closes.push(Math.max(price, 50)); // Minimum price 50
+    closes.push(Math.max(price, 50));
   }
   
   return closes;
 }
-
-/** === 🎯 Bandarmology Detection === **/
 
 function detectBandarmology(name, close, change, volume, high, low, netVol) {
   const signals = [];
@@ -163,45 +199,35 @@ function detectBandarmology(name, close, change, volume, high, low, netVol) {
   const volumeValue = close * volume;
   const netVolNum = parseFloat(netVol);
   
-  // 🚩 Signal 1: Volume Spike dengan Net Volume positif besar
   if (volumeValue > 50000000 && netVolNum > 10000000) {
-    signals.push("🔥 VOLUME SPIKE + NET VOL POSITIF");
+    signals.push("🔥 LONJAKAN VOLUME + NET BELI BESAR");
   }
-  
-  // 🚩 Signal 2: Closing di upper range dengan volume tinggi
+
   if (priceVsHigh > 95 && volumeValue > 20000000) {
-    signals.push("🎯 CLOSING UPPER RANGE + HIGH VOL");
+    signals.push("🎯 PENUTUPAN DEKAT HIGH + VOLUME TINGGI");
   }
-  
-  // 🚩 Signal 3: Breakout pattern dengan volume
+
   if (change > 5 && volumeValue > 30000000) {
-    signals.push("🚀 BREAKOUT PATTERN");
+    signals.push("🚀 POLA BREAKOUT");
   }
-  
-  // 🚩 Signal 4: Accumulation pattern (volume tinggi, range kecil)
+
   if (volumeValue > 40000000 && rangePct < 3 && Math.abs(change) < 2) {
-    signals.push("📈 ACCUMULATION PATTERN");
+    signals.push("📈 POLA AKUMULASI");
   }
-  
-  // 🚩 Signal 5: Distribution pattern (volume tinggi, closing di bawah)
+
   if (volumeValue > 40000000 && priceVsHigh < 85 && change < -2) {
-    signals.push("📉 DISTRIBUTION PATTERN");
+    signals.push("📉 POLA DISTRIBUSI");
   }
-  
-  // 🚩 Signal 6: Strong momentum dengan net buying
+
   if (change > 3 && netVolNum > 5000000 && priceVsHigh > 90) {
-    signals.push("⚡ STRONG MOMENTUM + NET BUYING");
+    signals.push("⚡ MOMENTUM KUAT + NET BELI");
   }
-  
-  // 🚩 Signal 7: Support level dengan volume
+
   if (priceVsLow < 110 && volumeValue > 25000000 && change > 0) {
-    signals.push("🛡️ SUPPORT LEVEL TEST");
+    signals.push("🛡️ UJI LEVEL SUPPORT");
   }
-  
   return signals;
 }
-
-/** === 🎖️ Stock Scoring & Recommendation === **/
 
 function calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, bb) {
   let score = 0;
@@ -213,32 +239,27 @@ function calculateStockScore(name, close, change, volume, high, low, netVol, rsi
   const macdNum = parseFloat(macd.macd);
   const macdSignal = parseFloat(macd.signal);
   
-  // Volume score (0-25 points)
   if (volumeValue > 100000000) score += 25;
   else if (volumeValue > 50000000) score += 20;
   else if (volumeValue > 25000000) score += 15;
   else if (volumeValue > 10000000) score += 10;
   else score += 5;
   
-  // Net Volume score (0-20 points)
   if (netVolNum > 20000000) score += 20;
   else if (netVolNum > 10000000) score += 15;
   else if (netVolNum > 5000000) score += 10;
   else if (netVolNum > 0) score += 5;
   
-  // Price action score (0-20 points)
   if (change > 5 && priceVsHigh > 95) score += 20;
   else if (change > 3 && priceVsHigh > 90) score += 15;
   else if (change > 1 && priceVsHigh > 85) score += 10;
   else if (change > 0) score += 5;
   
-  // Technical indicators score (0-20 points)
   if (rsiNum > 30 && rsiNum < 70 && macdNum > macdSignal) score += 20;
   else if (rsiNum > 40 && rsiNum < 60) score += 15;
   else if (rsiNum > 35 && rsiNum < 65) score += 10;
   else score += 5;
   
-  // Momentum score (0-15 points)
   if (Math.abs(change) > 5) score += 15;
   else if (Math.abs(change) > 3) score += 12;
   else if (Math.abs(change) > 1) score += 8;
@@ -265,8 +286,6 @@ function getRecommendation(score, change, rsi, netVol) {
   else return "❌ SELL";
 }
 
-/** === 🚀 Fetch Stocks Function === **/
-
 async function fetchStocks(sortBy, sortOrder) {
   const url = "https://scanner.tradingview.com/indonesia/scan";
   const payload = {
@@ -275,15 +294,16 @@ async function fetchStocks(sortBy, sortOrder) {
     symbols: { query: { types: [] }, tickers: [] },
     columns: ["name", "close", "change", "volume", "high", "low"],
     sort: { sortBy, sortOrder },
-    range: [0, 30] // ambil lebih banyak untuk filtering
+    range: [0, 30]
   };
 
   const res = await axios.post(url, payload, { headers });
   return res.data.data;
 }
 
-/** === 📈 Main Report Function === **/
 
+//function to get top stocks based on volume and volatility
+//return: 
 async function getTopStocks() {
   try {
     const [volumeData, volatileData] = await Promise.all([
@@ -296,7 +316,6 @@ async function getTopStocks() {
 
       const changeStr = (change > 0 ? "+" : "") + (Number.isFinite(change) ? change.toFixed(2) : "0.00") + "%";
 
-      // Generate realistic price data
       const closes = generateRealisticPriceData(close, 50);
 
       const rsiVal = calculateRSI(closes, 14);
@@ -304,7 +323,6 @@ async function getTopStocks() {
 
       const macd = calculateMACD(closes);
 
-      // Net Volume Calculation
       let netVol;
       if (item.d[7] !== undefined && item.d[8] !== undefined) {
         const buyVolume = item.d[7];
@@ -316,14 +334,11 @@ async function getTopStocks() {
         netVol = (netLot * close).toFixed(0);
       }
 
-      // Bandarmology Detection
       const bandarSignals = detectBandarmology(name, close, change, volume, high, low, netVol);
       
-      // Stock Scoring
       const score = calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, {});
       const recommendation = getRecommendation(score, change, rsi, netVol);
 
-      // Format functions
       const formatVolume = (vol) => {
         if (vol >= 1000000) return (vol / 1000000).toFixed(1) + "M";
         if (vol >= 1000) return (vol / 1000).toFixed(1) + "K";
@@ -351,7 +366,7 @@ async function getTopStocks() {
 
       return {
         text: (
-          `${index}. ${name} ${getRecommendationEmoji(recommendation)}\n` +
+          `${index}. *${name}* ${getRecommendationEmoji(recommendation)}\n` +
           `· Harga: ${close}\n` +
           `· Perubahan: ${changeStr}\n` +
           `· Volume: ${formatVolume(volume)}\n` +
@@ -359,7 +374,9 @@ async function getTopStocks() {
           `· MACD: ${macd.macd}\n` +
           `· Signal: ${getSignal()}\n` +
           `· Score: ${score}\n` +
-          (bandarSignals.length > 0 ? `· Alert: ${bandarSignals[0].replace(/[🔥🎯🚀📈📉⚡🛡️]/g, '').trim()}\n` : "")
+          (bandarSignals.length > 0 ? `· Alert: ${bandarSignals[0]} ${bandarSignals[0].match(/[🔥🎯🚀📈📉⚡🛡️]/g).join('')}\n` : "") +
+          '\n'
+
         ),
         score: score,
         recommendation: recommendation,
@@ -367,7 +384,6 @@ async function getTopStocks() {
       };
     };
 
-    // Gabungkan dan sort berdasarkan score
     const allStocks = [...volumeData, ...volatileData];
     const uniqueStocks = allStocks.filter((stock, index, self) => 
       self.findIndex(s => s.d[0] === stock.d[0]) === index
@@ -383,31 +399,25 @@ async function getTopStocks() {
       };
     });
 
-    // Sort by score (highest first)
     stocksWithScore.sort((a, b) => b.score - a.score);
 
-    // Ambil top 10
     const top10 = stocksWithScore.slice(0, 10);
 
-    // Split into 2 messages to avoid Telegram length limit
     const firstHalf = top10.slice(0, 5);
     const secondHalf = top10.slice(5, 10);
 
-    // First message - Top 5
     let message1 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 1/2)\n\n`;
     firstHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 1);
       message1 += formatted.text;
     });
 
-    // Second message - Top 6-10
     let message2 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 2/2)\n\n`;
     secondHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 6);
       message2 += formatted.text;
     });
 
-    // Summary statistics
     const strongBuyCount = top10.filter(s => s.recommendation === "🔥 STRONG BUY").length;
     const buyCount = top10.filter(s => s.recommendation === "✅ BUY").length;
     const bandarCount = top10.filter(s => s.bandarSignals.length > 0).length;
@@ -431,12 +441,11 @@ async function getTopStocks() {
   }
 }
 
-/** === 📤 Send to Telegram === **/
-
+//function to send message to Telegram
+//return:
 async function sendToTelegram(message) {
   const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   
-  // Split message if too long (Telegram limit ~4096 characters)
   const maxLength = 4000; // Leave some buffer
   const messages = [];
   
@@ -462,7 +471,6 @@ async function sendToTelegram(message) {
     }
   }
   
-  // Send all messages with small delay
   for (let i = 0; i < messages.length; i++) {
     try {
       await axios.post(telegramUrl, {
@@ -473,7 +481,6 @@ async function sendToTelegram(message) {
       });
       console.log(`✅ Sent message part ${i + 1}/${messages.length} to Telegram successfully.`);
       
-      // Add small delay between messages to avoid rate limiting
       if (i < messages.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
@@ -483,14 +490,16 @@ async function sendToTelegram(message) {
   }
 }
 
-/** === 🚀 Main Runner === **/
 
+//function to run the main function
+//return: 
 async function main() {
   const day = new Date().getUTCDay();
 
   if (day === 0 || day === 6) {
     await sendToTelegram("🛌 Market Tutup ... healing hela atuh boy");
   } else {
+    await fetchBeritaKontanDanKirim();
     await getTopStocks();
   }
 }
