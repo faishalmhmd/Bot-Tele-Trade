@@ -2,8 +2,8 @@ import axios from "axios";
 
 // telegram config
 const TELEGRAM_TOKEN = "8072640433:AAEEobZMFTpPOx01qGpPwq_b26xsEzXh8-o";
-const TELEGRAM_CHAT_ID = "-1002828449055"; // supergroup id (bukan yang lama)
-const TELEGRAM_THREAD_ID = 2; // ✅ thread id untuk Info Saham
+const TELEGRAM_CHAT_ID = "-1002828449055";
+const TELEGRAM_THREAD_ID = 2;
 
 const headers = {
   "Content-Type": "application/json",
@@ -13,12 +13,90 @@ const headers = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.70 Safari/537.36"
 };
 
-// Daftar emiten yang suspend (update sesuai kebutuhan)
-const SUSPENDED_STOCKS = [
-  "AISA", "BIPP", "BRMS", "CENT", "COWL", "DEWA", "ETWA", "FREN", 
-  "GAMA", "HERO", "IGAR", "JPFA", "KBLV", "LPPS", "MDRN", "MYTX", 
-  "OASA", "PGAS", "RANC", "SGRO", "SSIA", "TBLA", "TRIO", "WIKA"
-];
+// Fungsi untuk cek apakah saham suspend berdasarkan data TradingView
+function isStockSuspended(stockData) {
+  const [name, close, change, volume, high, low] = stockData.d;
+  
+  // Kriteria suspend yang lebih ketat:
+  // 1. Harga close = 0 atau null/undefined
+  // 2. Volume = 0 atau null/undefined  
+  // 3. Change = null/undefined atau NaN
+  // 4. High = Low = Close = 0 (tidak ada trading sama sekali)
+  // 5. High dan Low sama dengan Close dan volume = 0 (frozen)
+  // 6. Data tidak valid (NaN, undefined, null)
+  
+  // Cek data kosong atau invalid
+  if (close === null || close === undefined || !Number.isFinite(close)) {
+    return true;
+  }
+  
+  if (volume === null || volume === undefined || !Number.isFinite(volume)) {
+    return true;
+  }
+  
+  if (change === null || change === undefined || !Number.isFinite(change)) {
+    return true;
+  }
+  
+  if (high === null || high === undefined || !Number.isFinite(high)) {
+    return true;
+  }
+  
+  if (low === null || low === undefined || !Number.isFinite(low)) {
+    return true;
+  }
+  
+  // Cek kondisi suspend
+  const isSuspended = (
+    close === 0 || 
+    volume === 0 || 
+    (high === 0 && low === 0 && close === 0) ||
+    (high === low && close === high && volume === 0) ||
+    (Math.abs(change) === 0 && volume === 0 && high === low)
+  );
+  
+  return isSuspended;
+}
+
+// Fungsi untuk menentukan status suspend dengan level warning
+function getSuspendStatus(stockData) {
+  const [name, close, change, volume, high, low] = stockData.d;
+  
+  if (isStockSuspended(stockData)) {
+    return {
+      isSuspended: true,
+      level: "SUSPEND",
+      icon: "🚫",
+      warning: "SAHAM SUSPEND - JANGAN BELI!"
+    };
+  }
+  
+  // Cek kondisi mencurigakan (hampir suspend)
+  if (volume < 100000 && Math.abs(change) < 0.1) {
+    return {
+      isSuspended: false,
+      level: "ILLIQUID",
+      icon: "⚠️",
+      warning: "LIKUIDITAS RENDAH - HATI-HATI!"
+    };
+  }
+  
+  if (high === low && volume > 0) {
+    return {
+      isSuspended: false,
+      level: "FROZEN",
+      icon: "❄️",
+      warning: "HARGA FROZEN - MONITOR KETAT!"
+    };
+  }
+  
+  return {
+    isSuspended: false,
+    level: "NORMAL",
+    icon: "✅",
+    warning: ""
+  };
+}
 
 async function fetchBeritaKontanDanKirim() {
   const today = new Date();
@@ -52,8 +130,7 @@ async function fetchBeritaKontanDanKirim() {
       if (emitenMatch) {
         const emiten = emitenMatch[0];
         if (!addedEmiten.has(emiten)) {
-          const suspendStatus = SUSPENDED_STOCKS.includes(emiten) ? " 🚫 SUSPEND" : "";
-          message += `• *${emiten}*${suspendStatus} - ${text}\n`;
+          message += `• *${emiten}* - ${text}\n`;
           addedEmiten.add(emiten);
         }
       }
@@ -181,7 +258,7 @@ function calculateBB(closes, period = 20) {
 
 function generateRealisticPriceData(currentPrice, periods = 50) {
   const closes = [];
-  let price = currentPrice * 0.95; // Start 5% lower
+  let price = currentPrice * 0.95;
   
   for (let i = 0; i < periods; i++) {
     const volatility = (Math.random() - 0.5) * 0.03;
@@ -233,7 +310,21 @@ function detectBandarmology(name, close, change, volume, high, low, netVol) {
   return signals;
 }
 
-function calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, bb) {
+function calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, bb, suspendStatus) {
+  // Jika suspend, score otomatis 0
+  if (suspendStatus.isSuspended) {
+    return 0;
+  }
+  
+  // Jika illiquid atau frozen, kurangi score drastis
+  if (suspendStatus.level === "ILLIQUID") {
+    return 10; // Score sangat rendah
+  }
+  
+  if (suspendStatus.level === "FROZEN") {
+    return 20; // Score rendah
+  }
+  
   let score = 0;
   const volumeValue = close * volume;
   const netVolNum = parseFloat(netVol);
@@ -275,37 +366,46 @@ function calculateStockScore(name, close, change, volume, high, low, netVol, rsi
 function getRecommendationEmoji(recommendation) {
   if (recommendation.includes("BUY")) return "🟢";
   if (recommendation.includes("SELL")) return "🔴";
+  if (recommendation.includes("SUSPEND")) return "🚫";
+  if (recommendation.includes("AVOID")) return "⛔";
   return "⚪";
 }
 
-// FIX: Perbaikan logika untuk recommendation
-function getRecommendation(score, change, rsi, netVol, macd) {
+function getRecommendation(score, change, rsi, netVol, macd, suspendStatus) {
+  // Jika suspend, langsung return avoid
+  if (suspendStatus.isSuspended) {
+    return "🚫 AVOID - SUSPEND";
+  }
+  
+  // Jika illiquid atau frozen, avoid juga
+  if (suspendStatus.level === "ILLIQUID") {
+    return "⛔ AVOID - ILLIQUID";
+  }
+  
+  if (suspendStatus.level === "FROZEN") {
+    return "❄️ AVOID - FROZEN";
+  }
+  
   const rsiNum = parseFloat(rsi);
   const netVolNum = parseFloat(netVol);
   const macdNum = parseFloat(macd.macd);
   const macdSignal = parseFloat(macd.signal);
   
-  // Kondisi Strong Buy yang lebih realistis
   if (score >= 80 && change > 2 && netVolNum > 5000000 && macdNum > macdSignal && rsiNum < 70) {
     return "🔥 STRONG BUY";
   }
-  // Kondisi Buy yang lebih mudah tercapai
   else if (score >= 65 && change > 0 && (netVolNum > 0 || macdNum > macdSignal) && rsiNum < 75) {
     return "✅ BUY";
   }
-  // Kondisi Weak Buy
   else if (score >= 55 && change > 0 && rsiNum < 80) {
     return "📈 WEAK BUY";
   }
-  // Kondisi Hold
   else if (score >= 45 && Math.abs(change) < 3) {
     return "⚖️ HOLD";
   }
-  // Kondisi Weak Sell
   else if (score >= 35 && change < 0) {
     return "⚠️ WEAK SELL";
   }
-  // Kondisi Sell
   else {
     return "❌ SELL";
   }
@@ -319,7 +419,7 @@ async function fetchStocks(sortBy, sortOrder) {
     symbols: { query: { types: [] }, tickers: [] },
     columns: ["name", "close", "change", "volume", "high", "low"],
     sort: { sortBy, sortOrder },
-    range: [0, 50] // Ambil lebih banyak data untuk filter yang lebih baik
+    range: [0, 50]
   };
 
   const res = await axios.post(url, payload, { headers });
@@ -331,16 +431,14 @@ async function getTopStocks() {
     const [volumeData, volatileData, gainersData] = await Promise.all([
       fetchStocks("volume", "desc"),
       fetchStocks("change", "desc"),
-      fetchStocks("change", "desc") // Tambahan untuk gainer
+      fetchStocks("change", "desc")
     ]);
 
     const formatItem = (item, index) => {
       const [name, close, change, volume, high, low] = item.d;
 
-      // Skip jika emiten suspend
-      if (SUSPENDED_STOCKS.includes(name)) {
-        return null;
-      }
+      // Cek status suspend
+      const suspendStatus = getSuspendStatus(item);
 
       const changeStr = (change > 0 ? "+" : "") + (Number.isFinite(change) ? change.toFixed(2) : "0.00") + "%";
 
@@ -358,15 +456,14 @@ async function getTopStocks() {
         const netLot = buyVolume - sellVolume;
         netVol = (netLot * close).toFixed(0);
       } else {
-        // Estimasi net volume berdasarkan perubahan harga
         const netLot = volume * (change / 100) * (change > 0 ? 1 : -1);
         netVol = (netLot * close).toFixed(0);
       }
 
       const bandarSignals = detectBandarmology(name, close, change, volume, high, low, netVol);
       
-      const score = calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, {});
-      const recommendation = getRecommendation(score, change, rsi, netVol, macd);
+      const score = calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, {}, suspendStatus);
+      const recommendation = getRecommendation(score, change, rsi, netVol, macd, suspendStatus);
 
       const formatVolume = (vol) => {
         if (vol >= 1000000) return (vol / 1000000).toFixed(1) + "M";
@@ -383,6 +480,10 @@ async function getTopStocks() {
       };
 
       const getSignal = () => {
+        if (suspendStatus.isSuspended) return "SUSPEND";
+        if (suspendStatus.level === "ILLIQUID") return "ILLIQUID";
+        if (suspendStatus.level === "FROZEN") return "FROZEN";
+        
         const macdNum = parseFloat(macd.macd);
         const macdSignal = parseFloat(macd.signal);
         const rsiNum = parseFloat(rsi);
@@ -394,7 +495,7 @@ async function getTopStocks() {
 
       return {
         text: (
-          `${index}. *${name}* ${getRecommendationEmoji(recommendation)}${SUSPENDED_STOCKS.includes(name) ? ' 🚫' : ''}\n` +
+          `${index}. *${name}* ${suspendStatus.icon} ${getRecommendationEmoji(recommendation)}\n` +
           `· Harga: ${close}\n` +
           `· Perubahan: ${changeStr}\n` +
           `· Volume: ${formatVolume(volume)}\n` +
@@ -404,6 +505,7 @@ async function getTopStocks() {
           `· Signal: ${getSignal()}\n` +
           `· Rekomendasi: ${recommendation}\n` +
           `· Score: ${score}\n` +
+          (suspendStatus.warning ? `· ⚠️ *${suspendStatus.warning}*\n` : "") +
           (bandarSignals.length > 0 ? `· Alert: ${bandarSignals[0]}\n` : "") +
           '\n'
         ),
@@ -411,7 +513,8 @@ async function getTopStocks() {
         recommendation: recommendation,
         bandarSignals: bandarSignals,
         name: name,
-        change: change
+        change: change,
+        suspendStatus: suspendStatus
       };
     };
 
@@ -420,20 +523,21 @@ async function getTopStocks() {
       self.findIndex(s => s.d[0] === stock.d[0]) === index
     );
 
-    // Filter dan format stocks
+    // Format semua stocks termasuk yang suspend (untuk tracking)
     const stocksWithScore = uniqueStocks.map(stock => {
       const formatted = formatItem(stock, 0);
-      if (formatted === null) return null; // Skip suspended stocks
       return {
         ...stock,
         score: formatted.score,
         recommendation: formatted.recommendation,
         bandarSignals: formatted.bandarSignals,
         name: formatted.name,
-        change: formatted.change
+        change: formatted.change,
+        suspendStatus: formatted.suspendStatus
       };
-    }).filter(stock => stock !== null); // Remove null entries
+    });
 
+    // Sort berdasarkan score (suspend akan otomatis di bawah karena score 0)
     stocksWithScore.sort((a, b) => b.score - a.score);
 
     const top10 = stocksWithScore.slice(0, 10);
@@ -444,16 +548,16 @@ async function getTopStocks() {
     let message1 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 1/2)\n\n`;
     firstHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 1);
-      if (formatted) message1 += formatted.text;
+      message1 += formatted.text;
     });
 
     let message2 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 2/2)\n\n`;
     secondHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 6);
-      if (formatted) message2 += formatted.text;
+      message2 += formatted.text;
     });
 
-    // Hitung statistik dengan benar
+    // Hitung statistik
     const strongBuyCount = top10.filter(s => s.recommendation === "🔥 STRONG BUY").length;
     const buyCount = top10.filter(s => s.recommendation === "✅ BUY").length;
     const weakBuyCount = top10.filter(s => s.recommendation === "📈 WEAK BUY").length;
@@ -461,6 +565,12 @@ async function getTopStocks() {
     const bandarCount = top10.filter(s => s.bandarSignals.length > 0).length;
     const avgScore = (top10.reduce((a, b) => a + b.score, 0) / top10.length).toFixed(1);
     const gainersCount = top10.filter(s => s.change > 0).length;
+    
+    // Hitung jumlah saham suspend dan bermasalah
+    const suspendedCount = uniqueStocks.filter(s => getSuspendStatus(s).isSuspended).length;
+    const illiquidCount = uniqueStocks.filter(s => getSuspendStatus(s).level === "ILLIQUID").length;
+    const frozenCount = uniqueStocks.filter(s => getSuspendStatus(s).level === "FROZEN").length;
+    const avoidCount = top10.filter(s => s.recommendation.includes("AVOID")).length;
 
     message2 += `\n📊 *MARKET SUMMARY*\n`;
     message2 += `🔥 Strong Buy: *${strongBuyCount}* stocks\n`;
@@ -470,7 +580,10 @@ async function getTopStocks() {
     message2 += `📈 Gainers: *${gainersCount}* stocks\n`;
     message2 += `🎯 Bandar Activity: *${bandarCount}* stocks\n`;
     message2 += `📊 Average Score: \`${avgScore}/100\`\n`;
-    message2 += `🚫 Suspended Stocks: *${SUSPENDED_STOCKS.length}* filtered\n`;
+    message2 += `🚫 Suspended: *${suspendedCount}* stocks\n`;
+    message2 += `⚠️ Illiquid: *${illiquidCount}* stocks\n`;
+    message2 += `❄️ Frozen: *${frozenCount}* stocks\n`;
+    message2 += `⛔ Avoid (Top10): *${avoidCount}* stocks\n`;
     message2 += `\n_Updated: ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}_`;
 
     // Send both messages
@@ -487,7 +600,7 @@ async function getTopStocks() {
 async function sendToTelegram(message) {
   const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   
-  const maxLength = 4000; // Leave some buffer
+  const maxLength = 4000;
   const messages = [];
   
   if (message.length <= maxLength) {
@@ -542,4 +655,4 @@ async function main() {
   }
 }
 
-main();
+main(); 
