@@ -13,6 +13,12 @@ const headers = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.5993.70 Safari/537.36"
 };
 
+// Daftar emiten yang suspend (update sesuai kebutuhan)
+const SUSPENDED_STOCKS = [
+  "AISA", "BIPP", "BRMS", "CENT", "COWL", "DEWA", "ETWA", "FREN", 
+  "GAMA", "HERO", "IGAR", "JPFA", "KBLV", "LPPS", "MDRN", "MYTX", 
+  "OASA", "PGAS", "RANC", "SGRO", "SSIA", "TBLA", "TRIO", "WIKA"
+];
 
 async function fetchBeritaKontanDanKirim() {
   const today = new Date();
@@ -46,7 +52,8 @@ async function fetchBeritaKontanDanKirim() {
       if (emitenMatch) {
         const emiten = emitenMatch[0];
         if (!addedEmiten.has(emiten)) {
-          message += `• *${emiten}* - ${text}\n`;
+          const suspendStatus = SUSPENDED_STOCKS.includes(emiten) ? " 🚫 SUSPEND" : "";
+          message += `• *${emiten}*${suspendStatus} - ${text}\n`;
           addedEmiten.add(emiten);
         }
       }
@@ -63,9 +70,6 @@ async function fetchBeritaKontanDanKirim() {
   }
 }
 
-
-
-
 function calculateMA(closes, period = 20) {
   if (closes.length < period) return 0;
   const slice = closes.slice(-period);
@@ -74,7 +78,7 @@ function calculateMA(closes, period = 20) {
 }
 
 function calculateRSI(closes, period = 14) {
-  if (closes.length < period + 1) return 0;
+  if (closes.length < period + 1) return 50;
   
   const changes = [];
   for (let i = 1; i < closes.length; i++) {
@@ -274,16 +278,37 @@ function getRecommendationEmoji(recommendation) {
   return "⚪";
 }
 
-function getRecommendation(score, change, rsi, netVol) {
+// FIX: Perbaikan logika untuk recommendation
+function getRecommendation(score, change, rsi, netVol, macd) {
   const rsiNum = parseFloat(rsi);
   const netVolNum = parseFloat(netVol);
+  const macdNum = parseFloat(macd.macd);
+  const macdSignal = parseFloat(macd.signal);
   
-  if (score >= 85 && change > 0 && netVolNum > 0) return "🔥 STRONG BUY";
-  else if (score >= 70 && change > 0) return "✅ BUY";
-  else if (score >= 60 && change > 0) return "📈 WEAK BUY";
-  else if (score >= 50) return "⚖️ HOLD";
-  else if (score >= 40) return "⚠️ WEAK SELL";
-  else return "❌ SELL";
+  // Kondisi Strong Buy yang lebih realistis
+  if (score >= 80 && change > 2 && netVolNum > 5000000 && macdNum > macdSignal && rsiNum < 70) {
+    return "🔥 STRONG BUY";
+  }
+  // Kondisi Buy yang lebih mudah tercapai
+  else if (score >= 65 && change > 0 && (netVolNum > 0 || macdNum > macdSignal) && rsiNum < 75) {
+    return "✅ BUY";
+  }
+  // Kondisi Weak Buy
+  else if (score >= 55 && change > 0 && rsiNum < 80) {
+    return "📈 WEAK BUY";
+  }
+  // Kondisi Hold
+  else if (score >= 45 && Math.abs(change) < 3) {
+    return "⚖️ HOLD";
+  }
+  // Kondisi Weak Sell
+  else if (score >= 35 && change < 0) {
+    return "⚠️ WEAK SELL";
+  }
+  // Kondisi Sell
+  else {
+    return "❌ SELL";
+  }
 }
 
 async function fetchStocks(sortBy, sortOrder) {
@@ -294,25 +319,28 @@ async function fetchStocks(sortBy, sortOrder) {
     symbols: { query: { types: [] }, tickers: [] },
     columns: ["name", "close", "change", "volume", "high", "low"],
     sort: { sortBy, sortOrder },
-    range: [0, 30]
+    range: [0, 50] // Ambil lebih banyak data untuk filter yang lebih baik
   };
 
   const res = await axios.post(url, payload, { headers });
   return res.data.data;
 }
 
-
-//function to get top stocks based on volume and volatility
-//return: 
 async function getTopStocks() {
   try {
-    const [volumeData, volatileData] = await Promise.all([
+    const [volumeData, volatileData, gainersData] = await Promise.all([
       fetchStocks("volume", "desc"),
-      fetchStocks("change", "desc")
+      fetchStocks("change", "desc"),
+      fetchStocks("change", "desc") // Tambahan untuk gainer
     ]);
 
     const formatItem = (item, index) => {
       const [name, close, change, volume, high, low] = item.d;
+
+      // Skip jika emiten suspend
+      if (SUSPENDED_STOCKS.includes(name)) {
+        return null;
+      }
 
       const changeStr = (change > 0 ? "+" : "") + (Number.isFinite(change) ? change.toFixed(2) : "0.00") + "%";
 
@@ -330,14 +358,15 @@ async function getTopStocks() {
         const netLot = buyVolume - sellVolume;
         netVol = (netLot * close).toFixed(0);
       } else {
-        const netLot = volume * (change / 100);
+        // Estimasi net volume berdasarkan perubahan harga
+        const netLot = volume * (change / 100) * (change > 0 ? 1 : -1);
         netVol = (netLot * close).toFixed(0);
       }
 
       const bandarSignals = detectBandarmology(name, close, change, volume, high, low, netVol);
       
       const score = calculateStockScore(name, close, change, volume, high, low, netVol, rsi, macd, {});
-      const recommendation = getRecommendation(score, change, rsi, netVol);
+      const recommendation = getRecommendation(score, change, rsi, netVol, macd);
 
       const formatVolume = (vol) => {
         if (vol >= 1000000) return (vol / 1000000).toFixed(1) + "M";
@@ -362,42 +391,48 @@ async function getTopStocks() {
         if (macdNum < macdSignal && rsiNum > 30 && change < 0) return "SELL";
         return "HOLD";
       };
-      
 
       return {
         text: (
-          `${index}. *${name}* ${getRecommendationEmoji(recommendation)}\n` +
+          `${index}. *${name}* ${getRecommendationEmoji(recommendation)}${SUSPENDED_STOCKS.includes(name) ? ' 🚫' : ''}\n` +
           `· Harga: ${close}\n` +
           `· Perubahan: ${changeStr}\n` +
           `· Volume: ${formatVolume(volume)}\n` +
+          `· Net Vol: ${formatNetVol(netVol)}\n` +
           `· RSI: ${rsi}\n` +
           `· MACD: ${macd.macd}\n` +
           `· Signal: ${getSignal()}\n` +
+          `· Rekomendasi: ${recommendation}\n` +
           `· Score: ${score}\n` +
-          (bandarSignals.length > 0 ? `· Alert: ${bandarSignals[0]} ${bandarSignals[0].match(/[🔥🎯🚀📈📉⚡🛡️]/g).join('')}\n` : "") +
+          (bandarSignals.length > 0 ? `· Alert: ${bandarSignals[0]}\n` : "") +
           '\n'
-
         ),
         score: score,
         recommendation: recommendation,
-        bandarSignals: bandarSignals
+        bandarSignals: bandarSignals,
+        name: name,
+        change: change
       };
     };
 
-    const allStocks = [...volumeData, ...volatileData];
+    const allStocks = [...volumeData, ...volatileData, ...gainersData];
     const uniqueStocks = allStocks.filter((stock, index, self) => 
       self.findIndex(s => s.d[0] === stock.d[0]) === index
     );
 
+    // Filter dan format stocks
     const stocksWithScore = uniqueStocks.map(stock => {
       const formatted = formatItem(stock, 0);
+      if (formatted === null) return null; // Skip suspended stocks
       return {
         ...stock,
         score: formatted.score,
         recommendation: formatted.recommendation,
-        bandarSignals: formatted.bandarSignals
+        bandarSignals: formatted.bandarSignals,
+        name: formatted.name,
+        change: formatted.change
       };
-    });
+    }).filter(stock => stock !== null); // Remove null entries
 
     stocksWithScore.sort((a, b) => b.score - a.score);
 
@@ -409,25 +444,33 @@ async function getTopStocks() {
     let message1 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 1/2)\n\n`;
     firstHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 1);
-      message1 += formatted.text;
+      if (formatted) message1 += formatted.text;
     });
 
     let message2 = `🏆 *TOP 10 RECOMMENDED STOCKS* (Part 2/2)\n\n`;
     secondHalf.forEach((stock, index) => {
       const formatted = formatItem(stock, index + 6);
-      message2 += formatted.text;
+      if (formatted) message2 += formatted.text;
     });
 
+    // Hitung statistik dengan benar
     const strongBuyCount = top10.filter(s => s.recommendation === "🔥 STRONG BUY").length;
     const buyCount = top10.filter(s => s.recommendation === "✅ BUY").length;
+    const weakBuyCount = top10.filter(s => s.recommendation === "📈 WEAK BUY").length;
+    const totalBuySignals = strongBuyCount + buyCount + weakBuyCount;
     const bandarCount = top10.filter(s => s.bandarSignals.length > 0).length;
     const avgScore = (top10.reduce((a, b) => a + b.score, 0) / top10.length).toFixed(1);
+    const gainersCount = top10.filter(s => s.change > 0).length;
 
     message2 += `\n📊 *MARKET SUMMARY*\n`;
     message2 += `🔥 Strong Buy: *${strongBuyCount}* stocks\n`;
     message2 += `✅ Buy Signal: *${buyCount}* stocks\n`;
+    message2 += `📈 Weak Buy: *${weakBuyCount}* stocks\n`;
+    message2 += `🚀 Total Buy Signals: *${totalBuySignals}* stocks\n`;
+    message2 += `📈 Gainers: *${gainersCount}* stocks\n`;
     message2 += `🎯 Bandar Activity: *${bandarCount}* stocks\n`;
-    message2 += `📈 Average Score: \`${avgScore}/100\`\n`;
+    message2 += `📊 Average Score: \`${avgScore}/100\`\n`;
+    message2 += `🚫 Suspended Stocks: *${SUSPENDED_STOCKS.length}* filtered\n`;
     message2 += `\n_Updated: ${new Date().toLocaleString('id-ID', {timeZone: 'Asia/Jakarta'})}_`;
 
     // Send both messages
@@ -441,8 +484,6 @@ async function getTopStocks() {
   }
 }
 
-//function to send message to Telegram
-//return:
 async function sendToTelegram(message) {
   const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
   
@@ -490,9 +531,6 @@ async function sendToTelegram(message) {
   }
 }
 
-
-//function to run the main function
-//return: 
 async function main() {
   const day = new Date().getUTCDay();
 
